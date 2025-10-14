@@ -1,168 +1,33 @@
-/* global PIXI, FaceMesh, Camera */
-const video = document.getElementById("cam");
-const statusEl = document.getElementById("status");
-const startBtn = document.getElementById("start");
-const snapBtn  = document.getElementById("snap");
-const intensityInput = document.getElementById("intensity");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>CryingFace – Seamless Morph (WebGL)</title>
+  <style>
+    html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    #ui{position:fixed;left:0;right:0;top:0;display:flex;gap:.5rem;align-items:center;padding:10px;z-index:10;flex-wrap:wrap}
+    .chip{background:rgba(0,0,0,.5);padding:.35rem .6rem;border-radius:.6rem}
+    button{background:#111;border:1px solid #444;color:#fff;padding:.45rem .8rem;border-radius:.7rem;font-weight:600}
+    #intensity{width:160px}
+    #cam{display:none}
+    canvas{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <span id="status" class="chip">Tap Start to allow camera</span>
+    <button id="start">Start</button>
+    <button id="snap">Take Photo</button>
+    <label class="chip">Intensity <input id="intensity" type="range" min="0" max="1" step="0.01" value="0.8" /></label>
+  </div>
 
-// --- Camera ---
-async function startCamera() {
-  const s = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "user", width: {ideal: 1280}, height: {ideal: 720} },
-    audio: false
-  });
-  video.srcObject = s;
-  await video.play();
-  statusEl.textContent = "Camera ready";
-}
+  <video id="cam" autoplay playsinline muted></video>
 
-// --- PixiJS setup (WebGL) ---
-const app = new PIXI.Application({ resizeTo: window, backgroundAlpha: 1, antialias: true });
-document.body.appendChild(app.view);
-let texture = PIXI.Texture.from(video);
-texture.baseTexture.autoUpdate = true; // keeps video texture live
+  <script src="https://unpkg.com/pixi.js@7/dist/pixi.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 
-// Fullscreen sprite for screenshots (we render mesh to stage directly)
-const container = new PIXI.Container();
-app.stage.addChild(container);
-
-// Mesh grid (seamless): vertices deformed each frame
-const GRID_X = 24, GRID_Y = 24;            // quality/perf
-let mesh, verts, uvs, indices;
-
-function buildMesh() {
-  const w = app.renderer.width, h = app.renderer.height;
-  const dx = 1 / (GRID_X - 1), dy = 1 / (GRID_Y - 1);
-
-  verts = new Float32Array(GRID_X * GRID_Y * 2);
-  uvs   = new Float32Array(GRID_X * GRID_Y * 2);
-  const inds = [];
-
-  let p = 0, q = 0;
-  for (let j = 0; j < GRID_Y; j++) {
-    for (let i = 0; i < GRID_X; i++) {
-      const x = i * dx, y = j * dy;
-      verts[p++] = x * w;  // x
-      verts[p++] = y * h;  // y
-      uvs[q++] = 1 - x;    // mirror horizontally for selfie
-      uvs[q++] = y;
-    }
-  }
-  for (let j = 0; j < GRID_Y - 1; j++) {
-    for (let i = 0; i < GRID_X - 1; i++) {
-      const a = j * GRID_X + i;
-      const b = a + 1;
-      const c = a + GRID_X;
-      const d = c + 1;
-      inds.push(a, b, d, a, d, c);
-    }
-  }
-  indices = new Uint16Array(inds);
-
-  mesh = new PIXI.Mesh({
-    geometry: new PIXI.Geometry()
-      .addAttribute("aVertexPosition", verts, 2)
-      .addAttribute("aTextureCoord", uvs, 2)
-      .addIndex(indices),
-    texture,
-    drawMode: PIXI.DRAW_MODES.TRIANGLES
-  });
-  container.removeChildren();
-  container.addChild(mesh);
-}
-
-buildMesh();
-window.addEventListener("resize", buildMesh);
-
-// --- MediaPipe FaceMesh ---
-const faceMesh = new FaceMesh({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}` });
-faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
-faceMesh.onResults(onResults);
-
-let mpCamera;
-async function startMP() {
-  if (mpCamera) mpCamera.stop();
-  mpCamera = new Camera(video, { width: 1280, height: 720, onFrame: async () => { await faceMesh.send({ image: video }); } });
-  mpCamera.start();
-}
-
-// --- “Sad” deformation using RBF around control points (no seams) ---
-const CTRL = {
-  L_INNER_BROW: 65, L_MID_BROW: 70, R_INNER_BROW: 295, R_MID_BROW: 300,
-  L_UP: 159, R_UP: 386, M_L: 61, M_R: 291, U_LIP: 13
-};
-
-function rbfDisplacement(lmPx, intensity) {
-  const w = app.renderer.width, h = app.renderer.height;
-  const ipd = Math.hypot(lmPx[33].x - lmPx[263].x, lmPx[33].y - lmPx[263].y) || 1;
-  const ipdPx = ipd;
-
-  const targets = new Map();
-  const add = (id, dx, dy) => targets.set(id, { x: lmPx[id].x + dx, y: lmPx[id].y + dy });
-
-  const browDrop = 0.14 * ipdPx * intensity;
-  const pinch    = 0.04 * ipdPx * intensity;
-  const mouthDn  = 0.22 * ipdPx * intensity;
-  const lid      = 0.06 * ipdPx * intensity;
-
-  add(CTRL.L_INNER_BROW, -pinch,  browDrop);
-  add(CTRL.R_INNER_BROW,  pinch,  browDrop);
-  add(CTRL.L_MID_BROW,    -pinch*0.6, browDrop*0.6);
-  add(CTRL.R_MID_BROW,     pinch*0.6, browDrop*0.6);
-  add(CTRL.M_L, 0, mouthDn);
-  add(CTRL.M_R, 0, mouthDn);
-  add(CTRL.U_LIP, 0, -mouthDn * 0.25);
-  add(CTRL.L_UP, 0, lid);
-  add(CTRL.R_UP, 0, lid);
-
-  const centers = [...targets.keys()].map(k => ({ id: k, sx: lmPx[k].x, sy: lmPx[k].y, dx: targets.get(k).x - lmPx[k].x, dy: targets.get(k).y - lmPx[k].y }));
-  const sigma = ipdPx * 0.6;
-  const twoSig2 = 2 * sigma * sigma;
-
-  // update mesh vertices in place
-  for (let vi = 0, i = 0; i < verts.length; i += 2, vi++) {
-    let x = verts[i], y = verts[i + 1];
-    let wx = 0, wy = 0, ws = 0;
-    for (const c of centers) {
-      const dx = x - c.sx, dy = y - c.sy;
-      const wgt = Math.exp(-(dx*dx + dy*dy) / twoSig2);
-      wx += wgt * c.dx; wy += wgt * c.dy; ws += wgt;
-    }
-    if (ws > 1e-6) {
-      verts[i]     = x + wx / ws;
-      verts[i + 1] = y + wy / ws;
-    }
-  }
-  mesh.geometry.getBuffer("aVertexPosition").update(verts);
-}
-
-function onResults(res) {
-  if (!res.image || !res.multiFaceLandmarks || !res.multiFaceLandmarks.length) {
-    statusEl.textContent = "No face detected";
-    return;
-  }
-  statusEl.textContent = "Face detected";
-
-  // reset mesh to identity grid before each deformation
-  buildMesh();
-
-  const w = app.renderer.width, h = app.renderer.height;
-  const lmPx = res.multiFaceLandmarks[0].map(p => ({ x: (1 - p.x) * w, y: p.y * h })); // mirrored
-  const intensity = parseFloat(intensityInput.value || "0.75");
-  rbfDisplacement(lmPx, intensity);
-}
-
-// --- Capture to image ---
-snapBtn.addEventListener("click", async () => {
-  const img = app.renderer.extract.base64(app.stage);
-  const a = document.createElement("a");
-  a.href = img; a.download = "crying-face.png"; document.body.appendChild(a); a.click(); a.remove();
-});
-
-// --- Boot ---
-startBtn.addEventListener("click", async () => {
-  try { await startCamera(); await startMP(); } catch { statusEl.textContent = "Camera blocked"; }
-});
-
-// Try auto-start (iOS may still require Start)
-(async () => { try { await startCamera(); await startMP(); } catch(e){} })();
+  <script src="script.js" defer></script>
+</body>
+</html>
