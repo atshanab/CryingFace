@@ -15,12 +15,11 @@
       <button id="start">Start</button>
       <button id="snap">Take Photo</button>
       <button id="flip">Flip Camera</button>
+      <label class="force"><input type="checkbox" id="force"> Force Morph</label>
     </div>
   </div>
 
-  <!-- We keep the <video> hidden; MediaPipe reads from it. -->
   <video id="cam" autoplay playsinline muted></video>
-  <!-- Only the canvas is visible (mirrored via CSS) -->
   <canvas id="scene"></canvas>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
