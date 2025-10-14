@@ -6,4 +6,5 @@
 button{background:#111;border:1px solid #444;color:#fff;padding:.5rem .8rem;border-radius:.75rem;font-weight:600}
 button:active{transform:scale(.98)}
 #status{background:rgba(0,0,0,.5);padding:.35rem .6rem;border-radius:.5rem;font-size:.9rem}
-.force{display:flex;align-items:center;gap:.35rem;background:rgba(0,0,0,.35);padding:.25rem .5rem;border-radius:.5rem}
+.intensity{display:flex;align-items:center;gap:.4rem;background:rgba(0,0,0,.35);padding:.25rem .5rem;border-radius:.5rem}
+#intensity{width:160px}

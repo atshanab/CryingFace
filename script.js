@@ -6,23 +6,25 @@ const startBtn = document.getElementById("start");
 const snapBtn = document.getElementById("snap");
 const flipBtn = document.getElementById("flip");
 const statusEl = document.getElementById("status");
-const forceCB = document.getElementById("force");
+const intensityInput = document.getElementById("intensity");
 
 let facingMode = "user";
 let stream;
 
+// ---------- Camera ----------
 async function startCamera() {
-  stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: false
-  });
+  const constraints = {
+    video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+  };
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
   video.srcObject = stream;
   await video.play();
   canvas.width = video.videoWidth || 1280;
   canvas.height = video.videoHeight || 720;
-  statusEl.textContent = "Camera ready – look sad 😢";
+  statusEl.textContent = "Camera ready";
 }
 
+// ---------- FaceMesh ----------
 const faceMesh = new FaceMesh({
   locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`
 });
@@ -44,27 +46,7 @@ async function startMP() {
   mpCamera.start();
 }
 
-let sadEMA = 0, blinkEMA = 0;
-const ALPHA = 0.18;
-function computeSadness(lm) {
-  const L_INNER_BROW = 65, R_INNER_BROW = 295;
-  const L_EYE_UP = 159, L_EYE_LOW = 145;
-  const R_EYE_UP = 386, R_EYE_LOW = 374;
-  const M_L = 61, M_R = 291, U_LIP = 13;
-  const ipd = Math.hypot(lm[33].x - lm[263].x, lm[33].y - lm[263].y) + 1e-6;
-  const browEyeL = Math.abs(lm[L_INNER_BROW].y - lm[L_EYE_UP].y) / ipd;
-  const browEyeR = Math.abs(lm[R_INNER_BROW].y - lm[R_EYE_UP].y) / ipd;
-  const browLower = Math.max(0, 0.18 - (browEyeL + browEyeR) * 0.5) / 0.18;
-  const mouthDown = Math.max(0, ((lm[M_L].y + lm[M_R].y) * 0.5 - lm[U_LIP].y) / ipd - 0.05) * 3.0;
-  const earL = Math.abs(lm[L_EYE_UP].y - lm[L_EYE_LOW].y) / ipd;
-  const earR = Math.abs(lm[R_EYE_UP].y - lm[R_EYE_LOW].y) / ipd;
-  const blink = Math.max(0, 0.06 - (earL + earR) * 0.5) / 0.06;
-  const s = 0.6 * browLower + 0.4 * Math.min(1, mouthDown);
-  sadEMA   = (1 - ALPHA) * sadEMA + ALPHA * s;
-  blinkEMA = (1 - ALPHA) * blinkEMA + ALPHA * blink;
-  return { sad: sadEMA, blink: blinkEMA, ipd };
-}
-
+// ---------- Morph controls (always on) ----------
 const CTRL = { L_INNER_BROW:65, L_MID_BROW:70, R_INNER_BROW:295, R_MID_BROW:300, M_L:61, M_R:291, U_LIP:13, L_LIP:14, L_EYE_UP:159, R_EYE_UP:386 };
 
 function faceBBox(lm) {
@@ -108,14 +90,16 @@ function mapTriangle(img, s0,s1,s2, d0,d1,d2){
 }
 
 function warpFace(srcImg, bbox, disp){
-  const [bx,by,bw,bh]=bbox; const cols=20, rows=20; const dx=bw/cols, dy=bh/rows;
+  const [bx,by,bw,bh]=bbox; const cols=22, rows=22; const dx=bw/cols, dy=bh/rows;
   const src=[], dst=[];
   for(let j=0;j<=rows;j++){for(let i=0;i<=cols;i++){const x=bx+i*dx,y=by+j*dy;const p={x,y},q=disp(x,y);src.push(p);dst.push(q);}}
   const idx=(i,j)=> j*(cols+1)+i;
   for(let j=0;j<rows;j++){for(let i=0;i<cols;i++){const a=idx(i,j),b=idx(i+1,j),c=idx(i,j+1),d=idx(i+1,j+1);mapTriangle(srcImg,src[a],src[b],src[d],dst[a],dst[b],dst[d]);mapTriangle(srcImg,src[a],src[d],src[c],dst[a],dst[d],dst[c]);}}
 }
 
-const off = document.createElement("canvas"); const offCtx = off.getContext("2d");
+// ---------- Render ----------
+const off = document.createElement("canvas");
+const offCtx = off.getContext("2d");
 
 function onResults(res){
   if(!res.image) return;
@@ -132,27 +116,28 @@ function onResults(res){
   statusEl.textContent = "Face detected";
 
   const lm = faces[0];
-  const { sad, ipd } = computeSadness(lm);
-  const trigger = forceCB.checked || (sad > 0.52);
-  const strength = forceCB.checked ? 0.9 : Math.min(1, (sad - 0.52) * 2.2);
-  if(!trigger) return;
-
   const lmPx = lm.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
+
+  // Always-on morph with slider-controlled strength
+  const ipd = Math.hypot(lm[33].x - lm[263].x, lm[33].y - lm[263].y);
   const ipdPx = ipd * canvas.width;
-  const targets = sadTargets(lmPx, ipdPx, Math.max(0.3, strength));
+  const uiStrength = parseFloat(intensityInput.value || "0.7"); // 0..1
+  const targets = sadTargets(lmPx, ipdPx, uiStrength);
   const sigma = ipdPx * 0.55;
   const disp = displacementField(lmPx, targets, sigma);
   const bbox = faceBBox(lm);
   warpFace(off, bbox, disp);
 }
 
+// ---------- Capture ----------
 async function captureAndSave() {
   const blob = await new Promise(r => canvas.toBlob(r, "image/png", 0.95));
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "crying-face.png";
   document.body.appendChild(a); a.click(); a.remove();
 }
 
-startBtn.addEventListener("click", async () => { try{ await startCamera(); await startMP(); }catch(e){ statusEl.textContent='Camera blocked'; } });
+// ---------- UI ----------
+startBtn.addEventListener("click", async () => { try { await startCamera(); await startMP(); } catch(e){ statusEl.textContent='Camera blocked'; } });
 flipBtn.addEventListener("click", async () => {
   facingMode = (facingMode === "user") ? "environment" : "user";
   if (stream) stream.getTracks().forEach(t => t.stop());
@@ -160,4 +145,5 @@ flipBtn.addEventListener("click", async () => {
 });
 snapBtn.addEventListener("click", captureAndSave);
 
-(async () => { try{ await startCamera(); await startMP(); } catch(e){} })();
+// Try auto-start
+(async () => { try { await startCamera(); await startMP(); } catch(e){} })();
